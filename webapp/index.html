@@ -1,0 +1,229 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Enki · pyenki</title>
+<style>
+  :root{
+    --bg:#f4ece4; --card:#fff; --fg:#1d2421; --muted:#6b7772;
+    --green:#2e9e3f; --greend:#237a31; --line:#e2d9cf; --blue:#2f6fb0; --cold:#5a7fa6;
+  }
+  @media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+    --bg:#15191a; --card:#1f2527; --fg:#e8eceb; --muted:#9aa6a2; --line:#2c3437;
+  }}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);
+    font:16px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;padding:16px}
+  h1{font-size:1.3rem;margin:0 0 2px;display:flex;align-items:center;gap:8px}
+  h2{font-size:1.05rem;margin:28px 0 10px;border-top:1px solid var(--line);padding-top:18px}
+  .sub{color:var(--muted);font-size:.85rem;margin-bottom:16px}
+  .cards{display:grid;gap:12px;grid-template-columns:repeat(auto-fill,minmax(260px,1fr))}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:14px}
+  .name{font-weight:600}
+  .temps{display:flex;align-items:baseline;gap:12px;margin:6px 0 2px}
+  .meas{font-size:2rem;font-weight:700}
+  .unit{font-size:1rem;color:var(--muted)}
+  .tgt{color:var(--muted);font-size:.9rem}
+  .badge{display:inline-block;font-size:.72rem;padding:2px 8px;border-radius:20px;
+    background:var(--line);color:var(--fg);margin-top:4px}
+  .ctl{display:flex;align-items:center;gap:8px;margin-top:12px}
+  button{font:inherit;cursor:pointer;border:1px solid var(--line);background:var(--card);
+    color:var(--fg);border-radius:10px;padding:8px 12px}
+  button:active{transform:translateY(1px)}
+  .round{width:42px;height:42px;border-radius:50%;font-size:1.3rem;font-weight:700;padding:0}
+  .set{font-variant-numeric:tabular-nums;min-width:58px;text-align:center;font-weight:600}
+  .modes{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px}
+  .modes button{font-size:.8rem;padding:6px 10px}
+  .modes button.on{background:var(--green);border-color:var(--green);color:#fff}
+  .green{background:var(--green);border-color:var(--green);color:#fff}
+  .row{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+  select,input[type=time],input[type=number]{font:inherit;padding:6px 8px;border-radius:8px;
+    border:1px solid var(--line);background:var(--card);color:var(--fg)}
+  .sched-day{border:1px solid var(--line);border-radius:12px;padding:10px;margin-bottom:10px;background:var(--card)}
+  .sched-day h3{margin:0 0 8px;font-size:.95rem}
+  .slot{display:flex;align-items:center;gap:8px;margin-bottom:6px}
+  .slot .x{border:none;background:transparent;color:var(--muted);font-size:1.1rem;padding:2px 6px}
+  .toggle{display:flex;align-items:center;gap:8px}
+  .toast{position:fixed;left:50%;bottom:20px;transform:translateX(-50%);background:#222;color:#fff;
+    padding:10px 16px;border-radius:10px;opacity:0;transition:.2s;pointer-events:none;font-size:.9rem}
+  .toast.show{opacity:.95}
+  .muted{color:var(--muted)}
+  .ren{border:none;background:transparent;color:var(--muted);cursor:pointer;font-size:.9rem;padding:0 4px}
+  a{color:var(--green)}
+</style>
+</head>
+<body>
+<h1>🔥 Enki <span class="muted" style="font-size:.8rem;font-weight:400">pyenki</span></h1>
+<div class="sub">Control your radiators without opening the app. <span id="status"></span></div>
+
+<div class="row" style="margin-bottom:10px">
+  <button class="green" onclick="loadRadiators()">↻ Refresh</button>
+  <span class="muted" id="count"></span>
+</div>
+<div class="cards" id="cards"></div>
+
+<h2>🗓️ Schedule (°C / time / day)</h2>
+<div class="sub">The local scheduler applies these set-points at the given time (manual mode). A manual change between two slots stays in place.</div>
+<div class="row" style="margin-bottom:12px">
+  <label class="toggle"><input type="checkbox" id="globalEnabled"> <b>Scheduler active</b></label>
+  <span class="muted">·</span>
+  <label>Radiator:
+    <select id="schedRad" onchange="renderSchedule()"></select>
+  </label>
+  <label class="toggle"><input type="checkbox" id="radEnabled" onchange="onRadEnabled()"> scheduled</label>
+</div>
+<div id="schedDays"></div>
+<div class="row" style="margin-top:12px">
+  <button onclick="copyMonToAll()">Copy Monday → all days</button>
+  <button class="green" onclick="saveSchedule()">💾 Save schedule</button>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const DAYS=["Mon","Tue","Wed","Thu","Fri","Sat","Sun"];
+let RADS=[], SCHED={enabled:false,radiators:{}};
+
+const $=s=>document.querySelector(s);
+function toast(m){const t=$("#toast");t.textContent=m;t.classList.add("show");setTimeout(()=>t.classList.remove("show"),1800);}
+async function api(path,opts){const r=await fetch(path,opts);if(!r.ok)throw new Error((await r.json()).error||r.status);return r.json();}
+
+async function loadRadiators(){
+  $("#status").textContent="…loading";
+  try{
+    RADS=await api("/api/radiators");
+    $("#count").textContent=RADS.length+" radiator(s)";
+    $("#status").textContent="";
+    renderCards();
+    fillSchedRadSelect();
+  }catch(e){$("#status").textContent="error: "+e.message;}
+}
+
+function modeLabel(m){return {MANUAL:"Manual",FROST_PROTECTION:"Frost protection",
+  COLLECTIVE_SCHEDULE:"Enki schedule",INDIVIDUAL_SCHEDULE:"Custom schedule"}[m]||m||"—";}
+
+function renderCards(){
+  $("#cards").innerHTML="";
+  for(const r of RADS){
+    const tgt=(r.target??"—");
+    const el=document.createElement("div");el.className="card";
+    el.innerHTML=`
+      <div class="name">${r.label} <button class="ren" title="Rename" onclick="renameRad('${r.id}','${(r.label||"").replace(/'/g,"")}')">✎</button></div>
+      <div class="temps"><span class="meas">${r.measured??"—"}</span><span class="unit">°C measured</span></div>
+      <div class="tgt">target <b class="jtgt">${tgt}</b> °C</div>
+      <div><span class="badge">${modeLabel(r.mode)}</span></div>
+      <div class="ctl">
+        <button class="round" onclick="bump('${r.id}',-0.5,this)">−</button>
+        <span class="set"><span class="jset">${tgt}</span> °C</span>
+        <button class="round green" onclick="bump('${r.id}',0.5,this)">+</button>
+      </div>
+      <div class="modes">
+        <button onclick="setMode('${r.id}','MANUAL')">Manual</button>
+        <button onclick="setMode('${r.id}','FROST_PROTECTION')">Frost protection</button>
+        <button onclick="setMode('${r.id}','COLLECTIVE_SCHEDULE')">Enki schedule</button>
+      </div>`;
+    el._rad=r;
+    $("#cards").appendChild(el);
+  }
+}
+
+async function bump(id,delta,btn){
+  const card=btn.closest(".card");const set=card.querySelector(".jset");
+  let v=parseFloat(set.textContent);if(isNaN(v))v=19;
+  v=Math.max(7,Math.min(30,Math.round((v+delta)*2)/2));
+  set.textContent=v;
+  clearTimeout(card._t);
+  card._t=setTimeout(async()=>{
+    try{await api("/api/set",{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({id,temp:v})});
+      card.querySelector(".jtgt").textContent=v;toast(card._rad.label+" → "+v+"°C");
+    }catch(e){toast("error: "+e.message);}
+  },500);
+}
+
+async function renameRad(id,cur){
+  const name=prompt("New radiator name:",cur);
+  if(!name||name===cur)return;
+  try{await api("/api/set",{method:"POST",headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({id,label:name})});toast("Renamed: "+name);setTimeout(loadRadiators,600);
+  }catch(e){toast("error: "+e.message);}
+}
+async function setMode(id,mode){
+  try{await api("/api/set",{method:"POST",headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({id,mode})});
+    toast(modeLabel(mode));setTimeout(loadRadiators,800);
+  }catch(e){toast("error: "+e.message);}
+}
+
+// ---- schedule ----
+async function loadSchedule(){
+  SCHED=await api("/api/schedule");
+  $("#globalEnabled").checked=!!SCHED.enabled;
+  renderSchedule();
+}
+$("#globalEnabled").addEventListener("change",()=>{SCHED.enabled=$("#globalEnabled").checked;});
+
+function fillSchedRadSelect(){
+  const sel=$("#schedRad");const cur=sel.value;
+  sel.innerHTML=RADS.map(r=>`<option value="${r.id}">${r.label}</option>`).join("");
+  if(cur)sel.value=cur;
+  renderSchedule();
+}
+function curRad(){return $("#schedRad").value;}
+function radSched(){
+  const id=curRad();if(!id)return null;
+  SCHED.radiators[id]=SCHED.radiators[id]||{enabled:true,days:{}};
+  return SCHED.radiators[id];
+}
+function onRadEnabled(){const rs=radSched();if(rs)rs.enabled=$("#radEnabled").checked;}
+
+function renderSchedule(){
+  const rs=radSched();const box=$("#schedDays");box.innerHTML="";
+  if(!rs){box.innerHTML="<span class='muted'>No radiator.</span>";return;}
+  $("#radEnabled").checked=rs.enabled!==false;
+  for(let d=0;d<7;d++){
+    const entries=(rs.days[d]||[]);
+    const div=document.createElement("div");div.className="sched-day";
+    div.innerHTML=`<h3>${DAYS[d]}</h3>`;
+    const list=document.createElement("div");
+    entries.forEach((e,i)=>list.appendChild(slotRow(d,i,e)));
+    div.appendChild(list);
+    const add=document.createElement("button");add.textContent="+ slot";
+    add.onclick=()=>{(rs.days[d]=rs.days[d]||[]).push(["06:00",20]);renderSchedule();};
+    div.appendChild(add);
+    box.appendChild(div);
+  }
+}
+function slotRow(d,i,e){
+  const rs=radSched();
+  const row=document.createElement("div");row.className="slot";
+  row.innerHTML=`at <input type="time" value="${e[0]}"> →
+    <input type="number" min="7" max="30" step="0.5" value="${e[1]}" style="width:70px"> °C
+    <button class="x" title="delete">✕</button>`;
+  const inTime=row.querySelector("input[type=time]");
+  const inTemp=row.querySelector("input[type=number]");
+  inTime.onchange=()=>{rs.days[d][i][0]=inTime.value;};
+  inTemp.onchange=()=>{rs.days[d][i][1]=parseFloat(inTemp.value);};
+  row.querySelector(".x").onclick=()=>{rs.days[d].splice(i,1);renderSchedule();};
+  return row;
+}
+function copyMonToAll(){
+  const rs=radSched();if(!rs)return;
+  const mon=JSON.parse(JSON.stringify(rs.days[0]||[]));
+  for(let d=1;d<7;d++)rs.days[d]=JSON.parse(JSON.stringify(mon));
+  renderSchedule();toast("Monday copied to all days");
+}
+async function saveSchedule(){
+  SCHED.enabled=$("#globalEnabled").checked;
+  try{await api("/api/schedule",{method:"POST",headers:{"Content-Type":"application/json"},
+    body:JSON.stringify(SCHED)});toast("Schedule saved");
+  }catch(e){toast("error: "+e.message);}
+}
+
+loadRadiators();
+loadSchedule();
+setInterval(loadRadiators,30000);
+</script>
+</body>
+</html>
