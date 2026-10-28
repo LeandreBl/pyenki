@@ -45,9 +45,26 @@ class HeatingMode(str, Enum):
     COLLECTIVE_SCHEDULE = "COLLECTIVE_SCHEDULE"
 
 
+class ControlType(str, Enum):
+    """How the whole home is driven (POST .../homes/{id}/states).
+
+    This is the app's "Control type" screen. ``SCHEDULE`` carries a scheduleId
+    in the request's ``value``, ``MANUAL`` a modeId; ``OFF`` and ``INDIVIDUAL``
+    (per-radiator) take none.
+    """
+    SCHEDULE = "SCHEDULE"
+    MANUAL = "MANUAL"
+    OFF = "OFF"
+    INDIVIDUAL = "INDIVIDUAL"
+
+
 class Capability(str, Enum):
     """Node capability ids used in policy/schedule commands."""
     TARGET_TEMPERATURE = "change_thermostat_target_temperature"
+
+# Day keys of the schedule timeslots API, in python weekday() order (0 = Monday).
+WEEK = ("MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY",
+        "SUNDAY")
 
 # Per-service gateway keys are loaded from a local file, never committed.
 SERVICE_KEYS_FILE = os.environ.get(

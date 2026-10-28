@@ -12,14 +12,25 @@ import urllib.request
 import uuid
 
 from . import auth
-from .const import GATEWAY, UA, Capability, HeatingMode, load_service_keys
+from .const import (
+    GATEWAY,
+    UA,
+    WEEK,
+    Capability,
+    ControlType,
+    HeatingMode,
+    load_service_keys,
+)
 from .models import (
     CurrentPolicy,
     Home,
+    HomeMode,
+    HomeSchedule,
     Node,
     Overview,
     PolicyOption,
     Schedule,
+    TimeSlot,
 )
 
 DEFAULT_SECRET = "~/.config/enki/enki_secret.json"
@@ -30,9 +41,13 @@ class EnkiError(Exception):
 
 
 class EnkiClient:
-    def __init__(self, secret_path=DEFAULT_SECRET):
-        self.store = auth.Store(secret_path)
-        self.keys = load_service_keys()
+    def __init__(self, secret_path=DEFAULT_SECRET, store=None, keys=None):
+        """`store` overrides the JSON-file token store: any object exposing a
+        mutable ``data`` dict and ``save()`` works, so a host application can
+        keep the rotating refresh token in its own config. `keys` likewise
+        overrides the gateway keys loaded from SERVICE_KEYS_FILE."""
+        self.store = store if store is not None else auth.Store(secret_path)
+        self.keys = load_service_keys() if keys is None else dict(keys)
 
     # -- transport -------------------------------------------------------------
 
@@ -158,6 +173,81 @@ class EnkiClient:
         return self.request("POST", "api-enki-thermostat-prod",
                             "heating/%s/change-window-open-detection-mode" % node_id,
                             {"value": "ENABLED" if enabled else "DISABLED"})
+
+    # -- home-level control ----------------------------------------------------
+    # Enki drives the whole home with a control type: a named SCHEDULE (modes
+    # like Présent/Nuit/Absent over weekly slots), MANUAL, OFF, or INDIVIDUAL
+    # (each radiator on its own). This mirrors the app's "Control type" screen.
+
+    def home_modes(self):
+        """List[HomeMode]: the schedule modes this home uses."""
+        q = urllib.parse.urlencode({"homeId": self.home_id, "extended": "true"})
+        raw = self.request("GET", "api-enki-mobile-bff-prod", "heating/modes?" + q)
+        return [HomeMode.from_api(m) for m in self._items(raw)]
+
+    def home_schedules(self):
+        """List[HomeSchedule]: the home's named schedules, without their weeks.
+
+        Per-radiator schedules are :meth:`schedules` instead.
+        """
+        raw = self.request("GET", "api-enki-mobile-heating-bff-prod",
+                           "heating/homes/%s/schedules" % self.home_id)
+        return [HomeSchedule.from_api(s) for s in self._items(raw)]
+
+    def home_schedule(self, schedule_id):
+        """One named schedule *with* its weekly timeslots."""
+        q = urllib.parse.urlencode({"homeId": self.home_id})
+        return HomeSchedule.from_api(self.request(
+            "GET", "api-enki-mobile-bff-prod",
+            "heating/schedules/%s?%s" % (schedule_id, q)))
+
+    def home_state(self):
+        """The home's current control type, as a raw state document."""
+        return self.request("GET", "api-enki-heating-controller-prod",
+                            "homes/%s/states" % self.home_id)
+
+    def set_home_control(self, type_, value=None):
+        """Switch the whole home's control type. Answers 204.
+
+        SCHEDULE needs a scheduleId in `value`, MANUAL a modeId; OFF and
+        INDIVIDUAL take none.
+        """
+        try:
+            type_ = ControlType(type_)
+        except ValueError:
+            raise EnkiError("control type must be one of %s"
+                            % [t.value for t in ControlType])
+        if type_ is ControlType.SCHEDULE and not value:
+            raise EnkiError("SCHEDULE needs value=<scheduleId>")
+        return self.request("POST", "api-enki-heating-controller-prod",
+                            "homes/%s/states" % self.home_id,
+                            {"type": type_, "value": value})
+
+    def select_schedule(self, schedule_id):
+        """Activate a named schedule for the whole home."""
+        return self.set_home_control(ControlType.SCHEDULE, schedule_id)
+
+    def set_timeslots(self, schedule_id, days, label=""):
+        """Rewrite a named schedule's whole week.
+
+        `days` maps every WEEK key to a list of :class:`TimeSlot` (or of raw
+        ``{startTime,endTime,modeId}`` dicts). The API is a PUT of the entire
+        week, so a partial mapping would silently wipe the missing days — all
+        seven are required.
+        """
+        missing = [d for d in WEEK if d not in (days or {})]
+        if missing:
+            raise EnkiError("timeslots PUT replaces the week; missing days: %s"
+                            % ", ".join(missing))
+        payload = {
+            day: [s.to_api() if isinstance(s, TimeSlot) else s
+                  for s in (days[day] or [])]
+            for day in WEEK
+        }
+        q = urllib.parse.urlencode({"homeId": self.home_id})
+        return self.request("PUT", "api-enki-heating-prod",
+                            "schedules/%s/timeslots?%s" % (schedule_id, q),
+                            {"name": label, "days": payload})
 
     # -- native weekly schedule ------------------------------------------------
 

@@ -85,6 +85,39 @@ Writes answer `202`/`204` with an empty body. Other `heating/{nodeId}/change-*`
 and `check-*` routes exist on `thermostat-prod` (offset temperature, child lock,
 preheating, hysteresis, pilot-wire state…) — bodies not all captured yet.
 
+### Home-level control ("Control type")
+
+The whole home runs on one *control type*: a named `SCHEDULE`, `MANUAL` (one
+mode for everything), `OFF`, or `INDIVIDUAL` (each radiator on its own). Named
+schedules carry weekly slots of **modes** (Présent / Nuit / Absent), not °C —
+the per-device schedules below carry temperatures instead.
+
+| Method | Path | Notes |
+|---|---|---|
+| GET | `api-enki-mobile-bff-prod/v1/heating/modes?homeId={h}&extended=true` | the home's schedule modes (`{items:[{id,name:{label,i18n},type,color,offset}]}`) |
+| GET | `api-enki-mobile-heating-bff-prod/v1/heating/homes/{h}/schedules` | named schedules, without their weeks |
+| GET | `api-enki-mobile-bff-prod/v1/heating/schedules/{scheduleId}?homeId={h}` | one schedule **with** `timeslots` |
+| GET | `api-enki-heating-controller-prod/v1/homes/{h}/states` | current control type |
+| POST | `api-enki-heating-controller-prod/v1/homes/{h}/states` | set it: `{"type":"SCHEDULE","value":"<scheduleId>"}` (`MANUAL` takes a modeId, `OFF`/`INDIVIDUAL` `null`) |
+| PUT | `api-enki-heating-prod/v1/schedules/{scheduleId}/timeslots?homeId={h}` | rewrite the week: `{"name":"…","days":{…}}` |
+
+The `overview` call above already carries the home state, so reading it costs
+nothing extra: `state` (the control type) plus `currentMode`, `nextMode` and
+`currentSchedule`.
+
+Timeslots of a named schedule tile each day — every slot is a `startTime` plus
+the mode running from it, the last one ending `"00:00"`:
+```json
+{"days": {"MONDAY": [
+  {"startTime":"00:00","endTime":"07:00","modeId":"<night>"},
+  {"startTime":"07:00","endTime":"00:00","modeId":"<day>"}], "TUESDAY": [...]}}
+```
+The PUT **replaces all seven days**, so a partial mapping silently wipes the
+missing ones; `EnkiClient.set_timeslots` refuses it instead.
+
+Note `api-enki-heating-prod` (the timeslots PUT) is its own service, distinct
+from `api-enki-heating-controller-prod`, and needs its own gateway key.
+
 ### Native weekly schedule (programming)
 | Method | Path | Notes |
 |---|---|---|

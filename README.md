@@ -12,6 +12,8 @@ Adeo — the API is undocumented and may change. Pure standard library, no deps.
 - Discover your radiators, read live temperature / target / mode.
 - Set target temperature, switch modes (manual, frost protection, schedule).
 - Rename a device, toggle window-open detection, read/create native schedules.
+- Drive the whole home: control type (schedule / manual / off / individual),
+  its named schedules and their weekly mode slots.
 - A tiny web UI, and a local weekly programmer (°C / time / day).
 - A generic `request()` that reaches **any** Enki service (given its key).
 
@@ -52,13 +54,34 @@ enki.set_mode(r.id, HeatingMode.COLLECTIVE_SCHEDULE)
 enki.rename(r.id, "Salon")
 
 # native weekly schedule (Enki's own programming)
-enki.create_schedule(r["id"], {
+enki.create_schedule(r.id, {
     "MONDAY":  [("06:00", 20), ("08:00", 17), ("18:00", 21), ("22:00", 16)],
     "TUESDAY": [("06:00", 20), ("22:00", 16)],
 }, label="week")
 
+# home-level control: one schedule of modes for every radiator
+enki.home_modes()                   # -> list[HomeMode]  (Présent / Nuit / Absent)
+week = enki.home_schedule(enki.home_schedules()[0].id)   # -> HomeSchedule
+print(week.timeslots["MONDAY"])     # -> list[TimeSlot]
+enki.select_schedule(week.id)       # whole home follows it
+enki.set_home_control("INDIVIDUAL") # or each radiator on its own
+
+ov = enki.overview()                # one call: home state + every radiator
+print(ov.state, ov.current_mode, ov.next_mode, ov.current_schedule)
+
 # any other service:
 enki.request("GET", "api-enki-lighting-prod", "…")
+```
+
+Tokens live in a JSON file by default. To keep them somewhere else (a host
+app's own config), pass any object exposing a mutable `data` dict and `save()`:
+
+```python
+class MyStore:
+    def __init__(self, cfg): self.data = cfg          # {"home_id", "refresh_token", …}
+    def save(self): ...                               # persist self.data
+
+enki = EnkiClient(store=MyStore(my_config))
 ```
 
 ## Config / files (all gitignored)
